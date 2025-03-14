@@ -177,7 +177,3 @@ elif args.search:
     search_web(args.search)
 else:
     interactive_menu()
-
-
-if __name__ == "__main__":
-    main()
