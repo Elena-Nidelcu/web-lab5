@@ -78,6 +78,25 @@ def get_cached_response(cache_key):
     return None
 
 
+def go_to_url(url):
+    """Fetches and prints a web page response"""
+    parsed_url = urlparse(url)
+    host = parsed_url.netloc
+    path = parsed_url.path if parsed_url.path else "/"
+
+    cache_key = hashlib.md5(url.encode()).hexdigest()
+    cached_data = get_cached_response(cache_key)
+    if cached_data:
+        print(cached_data)
+        return
+
+    response = make_http_request(host, path, port=80)
+    body = parse_http_response(response)
+    text = clean_html(body)
+
+    cache_response(cache_key, text)
+    print(text)
+
 def search_web(query):
     """Searches the web using DuckDuckGo and prints top 10 results"""
     search_url = f"https://html.duckduckgo.com/html/?q={quote(query)}"
@@ -129,7 +148,11 @@ def interactive_menu():
         print("q. Exit")
         choice = input("Enter your choice: ").strip().lower()
 
-        if choice == "s":
+        if choice == "u":
+            url = input("Enter URL: ").strip()
+            if url:
+                go_to_url(url)
+        elif choice == "s":
             query = input("Enter search term: ").strip()
             if query:
                 search_web(query)
@@ -142,17 +165,18 @@ def interactive_menu():
             print("Invalid choice. Try again.")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="go2web - a CLI web client")
-    parser.add_argument("-u", "--url", help="Fetch content from a URL")
-    parser.add_argument("-s", "--search", help="Search for a term online")
+parser = argparse.ArgumentParser(description="go2web - a CLI web client")
+parser.add_argument("-u", "--url", help="Fetch content from a URL")
+parser.add_argument("-s", "--search", help="Search for a term online")
 
-    args = parser.parse_args()
+args = parser.parse_args()
 
-    if args.search:
-        search_web(args.search)
-    else:
-        interactive_menu()
+if args.url:
+    go_to_url(args.url)
+elif args.search:
+    search_web(args.search)
+else:
+    interactive_menu()
 
 
 if __name__ == "__main__":
