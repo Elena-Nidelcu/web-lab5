@@ -4,13 +4,16 @@ import hashlib
 import os
 from urllib.parse import urlparse, quote
 from bs4 import BeautifulSoup
+import json
 
 CACHE_DIR = "./cache"
 
 
-def make_http_request(host, path, port=80, follow_redirects=True):
-    """Makes a raw HTTP request using sockets and follows redirects"""
-    request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+
+def make_http_request(host, path, port=80, accept_json=False, follow_redirects=True):
+    """Makes an HTTP request and supports JSON content negotiation."""
+    headers = "Accept: application/json\r\n" if accept_json else "Accept: text/html\r\n"
+    request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\n{headers}Connection: close\r\n\r\n"
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((host, port))
@@ -23,21 +26,34 @@ def make_http_request(host, path, port=80, follow_redirects=True):
             response += data
     response = response.decode(errors="ignore")
 
-    # Handle redirects if needed
-    if follow_redirects:
-        if response.startswith("HTTP/1.1 301") or response.startswith("HTTP/1.1 302"):
-            location = None
-            for line in response.splitlines():
-                if line.lower().startswith("location:"):
-                    location = line.split(":", 1)[1].strip()
-                    break
-            if location:
-                print(f"Redirected to: {location}")
-                # Recursively follow the redirect
-                return follow_redirect(location)
+    # Handle redirects
+    if follow_redirects and ("HTTP/1.1 301" in response or "HTTP/1.1 302" in response):
+        location = None
+        for line in response.splitlines():
+            if line.lower().startswith("location:"):
+                location = line.split(":", 1)[1].strip()
+                break
+        if location:
+            return follow_redirect(location)
 
-    return response
+    # Extract headers and body
+    headers, _, body = response.partition("\r\n\r\n")
 
+    # Determine content type
+    content_type = ""
+    for line in headers.split("\n"):
+        if line.lower().startswith("content-type:"):
+            content_type = line.split(":", 1)[1].strip().lower()
+            break
+
+    # Handle JSON responses
+    if "application/json" in content_type:
+        try:
+            return json.loads(body)  # Parse JSON
+        except json.JSONDecodeError:
+            return {"error": "Invalid JSON response"}
+
+    return body  # Default: return HTML as text
 
 def follow_redirect(url):
     """Handles the redirection by making a new request"""
