@@ -7,6 +7,7 @@ import urllib.parse
 import os
 import json
 import hashlib
+import json
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 
@@ -19,7 +20,6 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 def generate_cache_key(url):
     """Generate a unique, filesystem-safe cache key for a given URL."""
-    # Use SHA-256 to create a unique, fixed-length filename
     return hashlib.sha256(url.encode()).hexdigest()
 
 
@@ -62,8 +62,43 @@ def store_in_cache(url, response):
         print(f"Cache write error: {e}")
 
 
+def parse_content(headers, body, content_type):
+    """
+    Parse content based on content type.
+
+    Args:
+        headers (str): HTTP headers
+        body (bytes): Response body
+        content_type (str): Content-Type header value
+
+    Returns:
+        str: Parsed and cleaned content
+    """
+    body_text = body.decode(errors="ignore")
+
+    if 'application/json' in content_type.lower():
+        # JSON parsing
+        try:
+            # Try to pretty print JSON
+            parsed_json = json.loads(body_text)
+            return json.dumps(parsed_json, indent=2)
+        except json.JSONDecodeError:
+            return body_text
+
+    elif 'text/html' in content_type.lower():
+        # HTML cleaning (existing method)
+        return clean_html(body_text)
+
+    elif 'text/plain' in content_type.lower():
+        # Plain text, return as-is
+        return body_text
+
+    # Default fallback
+    return body_text
+
+
 def make_http_request(host, path):
-    """Manually performs an HTTP GET request using sockets, with file-based caching and redirect handling."""
+    """Manually performs an HTTP GET request using sockets, with content negotiation."""
     url = f"{host}{path}"
     cached_response = get_from_cache(url)
     if cached_response:
@@ -73,7 +108,14 @@ def make_http_request(host, path):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((host, 80))
 
-        request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {USER_AGENT}\r\nConnection: close\r\n\r\n"
+        # Add Accept header for content negotiation
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            f"User-Agent: {USER_AGENT}\r\n"
+            f"Accept: text/html, application/json, text/plain\r\n"
+            "Connection: close\r\n\r\n"
+        )
         s.sendall(request.encode())
 
         response = b""
@@ -95,12 +137,16 @@ def make_http_request(host, path):
                 parsed_url = urllib.parse.urlparse(redirect_url)
                 return make_http_request(parsed_url.netloc, parsed_url.path)
 
-        # Extract response body
-        parts = response.split(b"\r\n\r\n", 1)
-        body = parts[1] if len(parts) > 1 else b""
+        # Extract headers and content
+        headers, body = response.split(b"\r\n\r\n", 1)
+        headers_str = headers.decode(errors="ignore")
 
-        body_text = body.decode(errors="ignore")
-        cleaned_text = clean_html(body_text)
+        # Extract content type (default to text/html if not specified)
+        content_type_match = re.search(r"Content-Type:\s*([^\r\n]+)", headers_str, re.IGNORECASE)
+        content_type = content_type_match.group(1) if content_type_match else "text/html"
+
+        # Parse content based on content type
+        cleaned_text = parse_content(headers_str, body, content_type)
 
         store_in_cache(url, cleaned_text)  # Cache the response
         return cleaned_text
