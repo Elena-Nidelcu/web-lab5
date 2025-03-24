@@ -2,22 +2,80 @@
 import socket
 import sys
 import re
+import time
+import urllib.parse
+import os
+import json
+import hashlib
 
-USER_AGENT = "Mozilla/5.0 (compatible; go2web/1.0)"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+
+CACHE_DIR = os.path.join(os.path.expanduser("~"), ".go2web_cache")
+CACHE_EXPIRATION = 600  # 10 minutes (600 seconds)
+
+# Ensure cache directory exists
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def generate_cache_key(url):
+    """Generate a unique, filesystem-safe cache key for a given URL."""
+    # Use SHA-256 to create a unique, fixed-length filename
+    return hashlib.sha256(url.encode()).hexdigest()
+
+
+def get_from_cache(url):
+    """Retrieve cached response from file if it is still valid."""
+    cache_key = generate_cache_key(url)
+    cache_file = os.path.join(CACHE_DIR, cache_key + ".json")
+
+    try:
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                cache_data = json.load(f)
+
+            # Check if cache has expired
+            if time.time() - cache_data['timestamp'] < CACHE_EXPIRATION:
+                print(f"[CACHE HIT] Returning cached response for {url}")
+                return cache_data['content']
+
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Cache read error: {e}")
+
+    return None
+
+
+def store_in_cache(url, response):
+    """Store the response in a file cache with a timestamp."""
+    cache_key = generate_cache_key(url)
+    cache_file = os.path.join(CACHE_DIR, cache_key + ".json")
+
+    try:
+        cache_data = {
+            'timestamp': time.time(),
+            'url': url,
+            'content': response
+        }
+
+        with open(cache_file, 'w', encoding='utf-8') as f:
+            json.dump(cache_data, f, ensure_ascii=False)
+    except IOError as e:
+        print(f"Cache write error: {e}")
 
 
 def make_http_request(host, path):
-    """Manually performs an HTTP GET request using sockets."""
+    """Manually performs an HTTP GET request using sockets, with file-based caching and redirect handling."""
+    url = f"{host}{path}"
+    cached_response = get_from_cache(url)
+    if cached_response:
+        return cached_response
+
     try:
-        # Create a socket and connect
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect((host, 80))
 
-        # Form the HTTP request
         request = f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: {USER_AGENT}\r\nConnection: close\r\n\r\n"
         s.sendall(request.encode())
 
-        # Receive the response
         response = b""
         while True:
             chunk = s.recv(4096)
@@ -26,18 +84,27 @@ def make_http_request(host, path):
             response += chunk
         s.close()
 
-        # Extract headers and body
+        response_text = response.decode(errors="ignore")
+
+        # Handle redirection (301, 302)
+        if 'HTTP/1.1 301' in response_text or 'HTTP/1.1 302' in response_text:
+            match = re.search(r"Location: (http[^\r\n]+)", response_text)
+            if match:
+                redirect_url = match.group(1)
+                print(f"Redirecting to: {redirect_url}")
+                parsed_url = urllib.parse.urlparse(redirect_url)
+                return make_http_request(parsed_url.netloc, parsed_url.path)
+
+        # Extract response body
         parts = response.split(b"\r\n\r\n", 1)
-        if len(parts) < 2:
-            return "No body content found in response"
+        body = parts[1] if len(parts) > 1 else b""
 
-        body = parts[1]
-
-        # Decode response
         body_text = body.decode(errors="ignore")
+        cleaned_text = clean_html(body_text)
 
-        # Strip HTML tags for readability
-        return clean_html(body_text)
+        store_in_cache(url, cleaned_text)  # Cache the response
+        return cleaned_text
+
     except Exception as e:
         return f"Error: {e}"
 
@@ -97,29 +164,25 @@ def clean_html(text):
 
     return text.strip()
 
+
 def search_duckduckgo(query):
     """Search DuckDuckGo and return the first 10 results."""
-    host = "html.duckduckgo.com"
-    path = f"/html/?q={query.replace(' ', '+')}"
+    encoded_query = urllib.parse.quote(query)
+    search_path = f"/html/?q={encoded_query}"
 
-    response = make_http_request(host, path)
+    cached_response = get_from_cache(search_path)
+    if cached_response:
+        return cached_response
 
-    # More robust result extraction
-    results = []
-    lines = response.split('\n')
-    for line in lines:
-        if "result__url" in line and "http" in line:
-            match = re.search(r'https?://\S+', line)
-            if match and len(results) < 10:
-                url = match.group(0).strip(',"\'')
-                if url not in results:  # Avoid duplicates
-                    results.append(url)
+    response = make_http_request("html.duckduckgo.com", search_path)
+    links = re.findall(r'<a rel="nofollow" href="(https?://[^"]+)"', response)
 
-    # Formatting output
-    if results:
-        return "Search results:\n" + "\n".join(f"{i + 1}. {url}" for i, url in enumerate(results))
-    else:
+    if not links:
         return "No results found."
+
+    result = "\n".join(links[:10])
+    store_in_cache(search_path, result)
+    return result
 
 
 def main():
@@ -135,11 +198,12 @@ def main():
         print("  go2web -u <URL>         # Fetches and prints content from the URL")
         print("  go2web -s <search-term> # Searches the term on DuckDuckGo and shows top 10 results")
         print("  go2web -h               # Displays this help message")
+        print(f"  Cache directory: {CACHE_DIR}")
 
     elif command == "-u" and len(sys.argv) > 2:
         url = sys.argv[2]
         if "://" in url:
-            url = url.split("://")[1]  # Remove http/https prefix
+            url = url.split("://")[1]
 
         host, path = (url.split("/", 1) + [""])[:2]
         path = "/" + path if path else "/"
