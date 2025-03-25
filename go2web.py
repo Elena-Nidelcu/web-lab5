@@ -167,6 +167,7 @@ def make_http_request(host, path, is_https=False, redirect_count=0):
     except Exception as e:
         return f"Error: {e}"
 
+
 def clean_html(text):
     """Removes HTML tags and cleans up the text for better readability with trimmed output."""
     # Remove scripts and style sections completely
