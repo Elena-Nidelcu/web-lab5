@@ -100,11 +100,13 @@ def parse_content(headers, body, content_type):
 
 
 def make_http_request(host, path, is_https=False, redirect_count=0):
-    """Manually performs an HTTP GET request using sockets, handling HTTPS and redirections."""
+    """Manually performs an HTTP GET request using sockets, handling HTTPS and relative/absolute redirections."""
 
     if redirect_count > MAX_REDIRECTS:
         return "Error: Too many redirects"
 
+    # Normalize path
+    path = path if path.startswith("/") else "/" + path
     url = f"{'https' if is_https else 'http'}://{host}{path}"
 
     try:
@@ -139,11 +141,15 @@ def make_http_request(host, path, is_https=False, redirect_count=0):
 
         # Handle redirection (301, 302)
         if 'HTTP/1.1 301' in response_text or 'HTTP/1.1 302' in response_text:
-            match = re.search(r"Location: (https?://[^\r\n]+)", response_text)
+            match = re.search(r"Location: ([^\r\n]+)", response_text)
             if match:
-                redirect_url = match.group(1)
+                redirect_url = match.group(1).strip()
                 print(f"Redirecting to: {redirect_url}")
+
+                # Resolve relative paths
+                redirect_url = urllib.parse.urljoin(url, redirect_url)
                 parsed_url = urllib.parse.urlparse(redirect_url)
+
                 return make_http_request(parsed_url.netloc, parsed_url.path or "/",
                                          is_https=(parsed_url.scheme == "https"),
                                          redirect_count=redirect_count + 1)
