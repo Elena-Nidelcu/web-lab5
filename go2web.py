@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import socket
+import ssl
 import sys
 import re
 import time
@@ -13,6 +14,7 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".go2web_cache")
 CACHE_EXPIRATION = 600  # 10 minutes (600 seconds)
+MAX_REDIRECTS = 5
 
 # Ensure cache directory exists
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -97,18 +99,25 @@ def parse_content(headers, body, content_type):
     return body_text
 
 
-def make_http_request(host, path):
-    """Manually performs an HTTP GET request using sockets, with content negotiation."""
-    url = f"{host}{path}"
-    cached_response = get_from_cache(url)
-    if cached_response:
-        return cached_response
+def make_http_request(host, path, is_https=False, redirect_count=0):
+    """Manually performs an HTTP GET request using sockets, handling HTTPS and redirections."""
+
+    if redirect_count > MAX_REDIRECTS:
+        return "Error: Too many redirects"
+
+    url = f"{'https' if is_https else 'http'}://{host}{path}"
 
     try:
+        port = 443 if is_https else 80
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.connect((host, 80))
 
-        # Add Accept header for content negotiation
+        if is_https:
+            context = ssl.create_default_context()
+            s = context.wrap_socket(s, server_hostname=host)
+
+        s.connect((host, port))
+
+        # HTTP request
         request = (
             f"GET {path} HTTP/1.1\r\n"
             f"Host: {host}\r\n"
@@ -130,14 +139,16 @@ def make_http_request(host, path):
 
         # Handle redirection (301, 302)
         if 'HTTP/1.1 301' in response_text or 'HTTP/1.1 302' in response_text:
-            match = re.search(r"Location: (http[^\r\n]+)", response_text)
+            match = re.search(r"Location: (https?://[^\r\n]+)", response_text)
             if match:
                 redirect_url = match.group(1)
                 print(f"Redirecting to: {redirect_url}")
                 parsed_url = urllib.parse.urlparse(redirect_url)
-                return make_http_request(parsed_url.netloc, parsed_url.path)
+                return make_http_request(parsed_url.netloc, parsed_url.path or "/",
+                                         is_https=(parsed_url.scheme == "https"),
+                                         redirect_count=redirect_count + 1)
 
-        # Extract headers and content
+        # Extract headers and body
         headers, body = response.split(b"\r\n\r\n", 1)
         headers_str = headers.decode(errors="ignore")
 
@@ -145,15 +156,10 @@ def make_http_request(host, path):
         content_type_match = re.search(r"Content-Type:\s*([^\r\n]+)", headers_str, re.IGNORECASE)
         content_type = content_type_match.group(1) if content_type_match else "text/html"
 
-        # Parse content based on content type
-        cleaned_text = parse_content(headers_str, body, content_type)
-
-        store_in_cache(url, cleaned_text)  # Cache the response
-        return cleaned_text
+        return body.decode(errors="ignore")  # Returning content
 
     except Exception as e:
         return f"Error: {e}"
-
 
 def clean_html(text):
     """Removes HTML tags and cleans up the text for better readability with trimmed output."""
